@@ -2,7 +2,6 @@ import type { LoaderArgs } from "@remix-run/node";
 import { Form } from "@remix-run/react";
 import { TypedMetaFunction, redirect, typedjson, useTypedLoaderData } from "remix-typedjson";
 import { LoginPageLayout } from "~/components/LoginPageLayout";
-import { LogoType } from "~/components/LogoType";
 import { Button, LinkButton } from "~/components/primitives/Buttons";
 import { Fieldset } from "~/components/primitives/Fieldset";
 import { Header1 } from "~/components/primitives/Headers";
@@ -54,6 +53,7 @@ export default function LoginPage() {
       <Form
         action={`/auth/github${data.redirectTo ? `?redirectTo=${data.redirectTo}` : ""}`}
         method="post"
+        className="w-full"
       >
         <div className="flex flex-col items-center">
           <Header1 className="pb-4 font-normal sm:text-2xl md:text-3xl lg:text-4xl">
@@ -62,7 +62,7 @@ export default function LoginPage() {
           <Paragraph variant="base" className="mb-6">
             Create an account or login
           </Paragraph>
-          <Fieldset>
+          <Fieldset className="w-full">
             <div className="flex flex-col gap-y-2">
               {data.showGithubAuth && (
                 <Button
