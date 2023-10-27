@@ -1,28 +1,24 @@
 import type { ActionArgs, LoaderArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { Form, useNavigation, useTransition } from "@remix-run/react";
+import { Form, useNavigation } from "@remix-run/react";
 import { TypedMetaFunction, typedjson, useTypedLoaderData } from "remix-typedjson";
 import { z } from "zod";
-import { LogoIcon } from "~/components/LogoIcon";
-import { AppContainer, MainCenteredContainer } from "~/components/layout/AppLayout";
+import { LoginPageLayout } from "~/components/LoginPageLayout";
 import { Button, LinkButton } from "~/components/primitives/Buttons";
 import { Fieldset } from "~/components/primitives/Fieldset";
 import { FormButtons } from "~/components/primitives/FormButtons";
+import { FormError } from "~/components/primitives/FormError";
 import { FormTitle } from "~/components/primitives/FormTitle";
+import { Header1 } from "~/components/primitives/Headers";
 import { Input } from "~/components/primitives/Input";
 import { InputGroup } from "~/components/primitives/InputGroup";
-import { Label } from "~/components/primitives/Label";
 import { NamedIcon } from "~/components/primitives/NamedIcon";
 import { Paragraph } from "~/components/primitives/Paragraph";
+import { TextLink } from "~/components/primitives/TextLink";
+import type { LoaderType as RootLoader } from "~/root";
 import { authenticator } from "~/services/auth.server";
 import { commitSession, getUserSession } from "~/services/sessionStorage.server";
-import magicLinkIcon from "./login.magic.svg";
-import type { LoaderType as RootLoader } from "~/root";
 import { appEnvTitleTag } from "~/utils";
-import { TextLink } from "~/components/primitives/TextLink";
-import { FormError } from "~/components/primitives/FormError";
-import { LoginPageLayout } from "~/components/LoginPageLayout";
-import { Header1 } from "~/components/primitives/Headers";
 
 export const meta: TypedMetaFunction<typeof loader, { root: RootLoader }> = ({ parentsData }) => ({
   title: `Login to Trigger.dev${appEnvTitleTag(parentsData?.root.appEnv)}`,
@@ -169,16 +165,16 @@ export default function LoginMagicLinkPage() {
                 </Button>
                 {magicLinkError && <FormError>{magicLinkError}</FormError>}
               </Fieldset>
-              <Paragraph variant="extra-small" className="my-4 text-center">
-                By logging in with your email you agree to our{" "}
+              <Paragraph variant="extra-small" className="mb-4 mt-6 text-center">
+                By signing up you agree to our{" "}
                 <TextLink href="https://trigger.dev/legal" target="_blank">
                   terms
-                </TextLink>{" "}
-                and{" "}
+                </TextLink>
+                {" "}and{" "}
                 <TextLink href="https://trigger.dev/legal/privacy" target="_blank">
                   privacy
-                </TextLink>{" "}
-                policy.
+                </TextLink>
+                {" "}policy.
               </Paragraph>
 
               <LinkButton
