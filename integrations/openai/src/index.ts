@@ -10,15 +10,15 @@ import {
   type TriggerIntegration,
 } from "@trigger.dev/sdk";
 import OpenAIApi from "openai";
-import { Models } from "./models";
-import { OpenAIIntegrationOptions } from "./types";
-import { Completions } from "./completions";
 import { Chat } from "./chat";
+import { Completions } from "./completions";
 import { Edits } from "./edits";
-import { Images } from "./images";
 import { Embeddings } from "./embeddings";
 import { Files } from "./files";
 import { FineTunes } from "./fineTunes";
+import { Images } from "./images";
+import { Models } from "./models";
+import { OpenAIIntegrationOptions } from "./types";
 
 export type OpenAIRunTask = InstanceType<typeof OpenAI>["runTask"];
 
@@ -55,6 +55,10 @@ export class OpenAI implements TriggerIntegration {
     this.native = new OpenAIApi({
       apiKey: options.apiKey,
       organization: options.organization,
+      baseURL: options.baseURL,
+      defaultHeaders: options.defaultHeaders,
+      defaultQuery: options.defaultQuery,
+      maxRetries: 0,
     });
   }
 
@@ -77,6 +81,10 @@ export class OpenAI implements TriggerIntegration {
     openai._client = new OpenAIApi({
       apiKey,
       organization: this._options.organization,
+      baseURL: this._options.baseURL ?? "https://api.openai.com/v1",
+      defaultHeaders: this._options.defaultHeaders,
+      defaultQuery: this._options.defaultQuery,
+      maxRetries: 0,
     });
     return openai;
   }
@@ -104,7 +112,7 @@ export class OpenAI implements TriggerIntegration {
         return callback(this._client, task, io);
       },
       {
-        icon: "openai",
+        icon: this._options.icon ?? "openai",
         retry: retry.standardBackoff,
         ...(options ?? {}),
         connectionKey: this._connectionKey,
@@ -118,11 +126,11 @@ export class OpenAI implements TriggerIntegration {
   }
 
   get completions() {
-    return new Completions(this.runTask.bind(this));
+    return new Completions(this.runTask.bind(this), this._options);
   }
 
   get chat() {
-    return new Chat(this.runTask.bind(this));
+    return new Chat(this.runTask.bind(this), this._options);
   }
 
   get edits() {
@@ -145,19 +153,29 @@ export class OpenAI implements TriggerIntegration {
     return new FineTunes(this.runTask.bind(this));
   }
 
-  // this provides backwards compatibility for the old API
   retrieveModel = this.models.retrieve;
   listModels = this.models.list;
   deleteModel = this.models.delete;
   deleteFineTune = this.models.delete;
   createCompletion = this.completions.create;
-  backgroundCreateCompletion = this.completions.backgroundCreate;
   createChatCompletion = this.chat.completions.create;
-  backgroundCreateChatCompletion = this.chat.completions.backgroundCreate;
 
   /**
-   * @deprecated The Edits API is deprecated; please use Chat Completions instead.
+   * @deprecated Please use openai.completions.backgroundCreate instead
    */
+  async backgroundCreateCompletion(...args: Parameters<typeof this.completions.backgroundCreate>) {
+    return this.completions.backgroundCreate(...args);
+  }
+
+  /**
+   * @deprecated Please use openai.chat.completions.backgroundCreate instead
+   */
+  async backgroundCreateChatCompletion(
+    ...args: Parameters<typeof this.chat.completions.backgroundCreate>
+  ) {
+    return this.chat.completions.backgroundCreate(...args);
+  }
+
   createEdit = this.edits.create;
   generateImage = this.images.generate;
   createImage = this.images.generate;

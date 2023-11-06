@@ -32,11 +32,13 @@ export const TaskSchema = z.object({
   style: StyleSchema.optional().nullable(),
   operation: z.string().optional().nullable(),
   callbackUrl: z.string().optional().nullable(),
+  childExecutionMode: z.enum(["SEQUENTIAL", "PARALLEL"]).optional().nullable(),
 });
 
 export const ServerTaskSchema = TaskSchema.extend({
   idempotencyKey: z.string(),
   attempts: z.number(),
+  forceYield: z.boolean().optional().nullable(),
 });
 
 export type ServerTask = z.infer<typeof ServerTaskSchema>;

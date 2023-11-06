@@ -1,31 +1,40 @@
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { InboxArrowDownIcon } from "@heroicons/react/24/solid";
-import type { ActionArgs, LoaderArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
 import { Form, useNavigation } from "@remix-run/react";
-import { TypedMetaFunction, typedjson, useTypedLoaderData } from "remix-typedjson";
+import {
+  TypedMetaFunction,
+  UseDataFunctionReturn,
+  typedjson,
+  useTypedLoaderData,
+} from "remix-typedjson";
 import { z } from "zod";
 import { LoginPageLayout } from "~/components/LoginPageLayout";
 import { Button, LinkButton } from "~/components/primitives/Buttons";
 import { Fieldset } from "~/components/primitives/Fieldset";
 import { FormButtons } from "~/components/primitives/FormButtons";
-import { FormError } from "~/components/primitives/FormError";
-import { FormTitle } from "~/components/primitives/FormTitle";
 import { Header1 } from "~/components/primitives/Headers";
 import { Input } from "~/components/primitives/Input";
 import { InputGroup } from "~/components/primitives/InputGroup";
 import { NamedIcon } from "~/components/primitives/NamedIcon";
 import { Paragraph } from "~/components/primitives/Paragraph";
-import { TextLink } from "~/components/primitives/TextLink";
 import type { LoaderType as RootLoader } from "~/root";
 import { authenticator } from "~/services/auth.server";
 import { commitSession, getUserSession } from "~/services/sessionStorage.server";
 import { appEnvTitleTag } from "~/utils";
+import { TextLink } from "~/components/primitives/TextLink";
+import { FormError } from "~/components/primitives/FormError";
+import { getMatchesData, metaV1 } from "@remix-run/v1-meta";
 
-export const meta: TypedMetaFunction<typeof loader, { root: RootLoader }> = ({ parentsData }) => ({
-  title: `Login to Trigger.dev${appEnvTitleTag(parentsData?.root.appEnv)}`,
-});
+export const meta: TypedMetaFunction<typeof loader> = (args) => {
+  const matchesData = getMatchesData(args) as { root: UseDataFunctionReturn<RootLoader> };
 
-export async function loader({ request }: LoaderArgs) {
+  return metaV1(args, {
+    title: `Login to Trigger.dev${appEnvTitleTag(matchesData.root.appEnv)}`,
+  });
+};
+
+export async function loader({ request }: LoaderFunctionArgs) {
   await authenticator.isAuthenticated(request, {
     successRedirect: "/",
   });
@@ -53,7 +62,7 @@ export async function loader({ request }: LoaderArgs) {
   );
 }
 
-export async function action({ request }: ActionArgs) {
+export async function action({ request }: ActionFunctionArgs) {
   const clonedRequest = request.clone();
 
   const payload = Object.fromEntries(await clonedRequest.formData());

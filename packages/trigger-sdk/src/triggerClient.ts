@@ -6,11 +6,13 @@ import {
   GetRunOptionsWithTaskDetails,
   GetRunsOptions,
   HandleTriggerSource,
+  HttpEndpointRequestHeadersSchema,
   HttpSourceRequestHeadersSchema,
   HttpSourceResponseMetadata,
   IndexEndpointResponse,
   InitializeTriggerBodySchema,
   IntegrationConfig,
+  InvokeOptions,
   JobMetadata,
   LogLevel,
   Logger,
@@ -24,6 +26,7 @@ import {
   RegisterTriggerBodyV2,
   RunJobBody,
   RunJobBodySchema,
+  RunJobErrorResponse,
   RunJobResponse,
   ScheduleMetadata,
   SendEvent,
@@ -31,14 +34,20 @@ import {
   SourceMetadataV2,
   StatusUpdate,
 } from "@trigger.dev/core";
+import { yellow } from "colorette";
 import { ApiClient } from "./apiClient";
 import {
+  AutoYieldExecutionError,
+  AutoYieldWithCompletedTaskExecutionError,
   CanceledWithTaskError,
+  ErrorWithTask,
   ParsedPayloadSchemaError,
+  ResumeWithParallelTaskError,
   ResumeWithTaskError,
   RetryWithTaskError,
   YieldExecutionError,
 } from "./errors";
+import { EndpointOptions, HttpEndpoint, httpEndpoint } from "./httpEndpoint";
 import { TriggerIntegration } from "./integrations";
 import { IO, IOStats } from "./io";
 import { createIOWithIntegrations } from "./ioWithIntegrations";
@@ -62,6 +71,8 @@ const registerSourceEvent: EventSpecification<RegisterSourceEventV2> = {
   icon: "register-source",
   parsePayload: RegisterSourceEventSchemaV2.parse,
 };
+
+import * as packageJson from "../package.json";
 
 export type TriggerClientOptions = {
   /** The `id` property is used to uniquely identify the client.
@@ -116,6 +127,7 @@ export class TriggerClient {
   > = {};
   #jobMetadataByDynamicTriggers: Record<string, Array<{ id: string; version: string }>> = {};
   #registeredSchedules: Record<string, Array<{ id: string; version: string }>> = {};
+  #registeredHttpEndpoints: Record<string, HttpEndpoint<EventSpecification<any>>> = {};
   #authResolvers: Record<string, TriggerAuthResolver> = {};
 
   #client: ApiClient;
@@ -132,7 +144,10 @@ export class TriggerClient {
     ]);
   }
 
-  async handleRequest(request: Request): Promise<NormalizedResponse> {
+  async handleRequest(
+    request: Request,
+    timeOrigin: number = performance.now()
+  ): Promise<NormalizedResponse> {
     this.#internalLogger.debug("handling request", {
       url: request.url,
       headers: Object.fromEntries(request.headers.entries()),
@@ -154,7 +169,7 @@ export class TriggerClient {
           body: {
             message: "Unauthorized: client missing apiKey",
           },
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
       case "missing-header": {
@@ -163,7 +178,7 @@ export class TriggerClient {
           body: {
             message: "Unauthorized: missing x-trigger-api-key header",
           },
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
       case "unauthorized": {
@@ -172,7 +187,7 @@ export class TriggerClient {
           body: {
             message: `Forbidden: client apiKey mismatch: Make sure you are using the correct API Key for your environment`,
           },
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
     }
@@ -183,7 +198,7 @@ export class TriggerClient {
         body: {
           message: "Method not allowed (only POST is allowed)",
         },
-        headers: this.#standardResponseHeaders,
+        headers: this.#standardResponseHeaders(timeOrigin),
       };
     }
 
@@ -195,7 +210,7 @@ export class TriggerClient {
         body: {
           message: "Missing x-trigger-action header",
         },
-        headers: this.#standardResponseHeaders,
+        headers: this.#standardResponseHeaders(timeOrigin),
       };
     }
 
@@ -210,7 +225,7 @@ export class TriggerClient {
               ok: false,
               error: "Missing endpoint ID",
             },
-            headers: this.#standardResponseHeaders,
+            headers: this.#standardResponseHeaders(timeOrigin),
           };
         }
 
@@ -221,7 +236,7 @@ export class TriggerClient {
               ok: false,
               error: `Endpoint ID mismatch error. Expected ${this.id}, got ${endpointId}`,
             },
-            headers: this.#standardResponseHeaders,
+            headers: this.#standardResponseHeaders(timeOrigin),
           };
         }
 
@@ -230,7 +245,7 @@ export class TriggerClient {
           body: {
             ok: true,
           },
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
       case "INDEX_ENDPOINT": {
@@ -249,13 +264,16 @@ export class TriggerClient {
             id,
             jobs,
           })),
+          httpEndpoints: Object.entries(this.#registeredHttpEndpoints).map(([id, endpoint]) =>
+            endpoint.toJSON()
+          ),
         };
 
         // if the x-trigger-job-id header is not set, we return all jobs
         return {
           status: 200,
           body,
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
       case "INITIALIZE_TRIGGER": {
@@ -285,7 +303,7 @@ export class TriggerClient {
         return {
           status: 200,
           body: dynamicTrigger.registeredTriggerForParams(body.data.params),
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
       case "EXECUTE_JOB": {
@@ -312,12 +330,19 @@ export class TriggerClient {
           };
         }
 
-        const results = await this.#executeJob(execution.data, job, triggerVersion);
+        const results = await this.#executeJob(execution.data, job, timeOrigin, triggerVersion);
+
+        this.#internalLogger.debug("executed job", {
+          results,
+          job: job.id,
+          version: job.version,
+          triggerVersion,
+        });
 
         return {
           status: 200,
           body: results,
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
       case "PREPROCESS_RUN": {
@@ -352,7 +377,7 @@ export class TriggerClient {
             abort: results.abort,
             properties: results.properties,
           },
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
       case "DELIVER_HTTP_SOURCE_REQUEST": {
@@ -418,7 +443,55 @@ export class TriggerClient {
             response,
             metadata,
           },
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
+        };
+      }
+      case "DELIVER_HTTP_ENDPOINT_REQUEST_FOR_RESPONSE": {
+        const headers = HttpEndpointRequestHeadersSchema.safeParse(
+          Object.fromEntries(request.headers.entries())
+        );
+
+        if (!headers.success) {
+          return {
+            status: 400,
+            body: {
+              message: "Invalid headers",
+            },
+          };
+        }
+
+        const sourceRequestNeedsBody = headers.data["x-ts-http-method"] !== "GET";
+
+        const sourceRequestInit: RequestInit = {
+          method: headers.data["x-ts-http-method"],
+          headers: headers.data["x-ts-http-headers"],
+          body: sourceRequestNeedsBody ? request.body : undefined,
+        };
+
+        if (sourceRequestNeedsBody) {
+          try {
+            // @ts-ignore
+            sourceRequestInit.duplex = "half";
+          } catch (error) {
+            // ignore
+          }
+        }
+
+        const sourceRequest = new Request(headers.data["x-ts-http-url"], sourceRequestInit);
+
+        const key = headers.data["x-ts-key"];
+
+        const { response } = await this.#handleHttpEndpointRequestForResponse(
+          {
+            key,
+          },
+          sourceRequest
+        );
+
+        return {
+          status: 200,
+          body: response,
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
       case "VALIDATE": {
@@ -428,7 +501,22 @@ export class TriggerClient {
             ok: true,
             endpointId: this.id,
           },
-          headers: this.#standardResponseHeaders,
+          headers: this.#standardResponseHeaders(timeOrigin),
+        };
+      }
+      case "PROBE_EXECUTION_TIMEOUT": {
+        const json = await request.json();
+        // Keep this request open for max 15 minutes so the server can detect when the function execution limit is exceeded
+        const timeout = json?.timeout ?? 15 * 60 * 1000;
+
+        await new Promise((resolve) => setTimeout(resolve, timeout));
+
+        return {
+          status: 200,
+          body: {
+            ok: true,
+          },
+          headers: this.#standardResponseHeaders(timeOrigin),
         };
       }
     }
@@ -438,15 +526,26 @@ export class TriggerClient {
       body: {
         message: "Method not allowed",
       },
-      headers: this.#standardResponseHeaders,
+      headers: this.#standardResponseHeaders(timeOrigin),
     };
   }
 
   defineJob<
     TTrigger extends Trigger<EventSpecification<any>>,
     TIntegrations extends Record<string, TriggerIntegration> = {},
-  >(options: JobOptions<TTrigger, TIntegrations>) {
-    return new Job<TTrigger, TIntegrations>(this, options);
+    TOutput extends any = any,
+  >(options: JobOptions<TTrigger, TIntegrations, TOutput>) {
+    const existingRegisteredJob = this.#registeredJobs[options.id];
+
+    if (existingRegisteredJob) {
+      console.warn(
+        yellow(
+          `[@trigger.dev/sdk] Warning: The Job "${existingRegisteredJob.id}" you're attempting to define has already been defined. Please assign a different ID to the job.`
+        )
+      );
+    }
+
+    return new Job<TTrigger, TIntegrations, TOutput>(this, options);
   }
 
   defineAuthResolver(
@@ -471,9 +570,29 @@ export class TriggerClient {
     return new DynamicTrigger(this, options);
   }
 
+  /**
+   * An [HTTP endpoint](https://trigger.dev/docs/documentation/concepts/http-endpoints) allows you to create a [HTTP Trigger](https://trigger.dev/docs/documentation/concepts/triggers/http), which means you can trigger your Jobs from any webhooks.
+   * @param options The Endpoint options
+   * @returns An HTTP Endpoint, that can be used to create an HTTP Trigger.
+   * @link https://trigger.dev/docs/documentation/concepts/http-endpoints
+   */
+  defineHttpEndpoint(options: EndpointOptions) {
+    const existingHttpEndpoint = this.#registeredHttpEndpoints[options.id];
+    if (existingHttpEndpoint) {
+      console.warn(
+        yellow(
+          `[@trigger.dev/sdk] Warning: The HttpEndpoint "${existingHttpEndpoint.id}" you're attempting to define has already been defined. Please assign a different ID to the HttpEndpoint.`
+        )
+      );
+    }
+
+    const endpoint = httpEndpoint(options);
+    this.#registeredHttpEndpoints[endpoint.id] = endpoint;
+    return endpoint;
+  }
+
   attach(job: Job<Trigger<any>, any>): void {
     this.#registeredJobs[job.id] = job;
-
     job.trigger.attachToJob(this, job);
   }
 
@@ -601,8 +720,13 @@ export class TriggerClient {
     this.#registeredSchedules[key] = jobs;
   }
 
-  async registerTrigger(id: string, key: string, options: RegisterTriggerBodyV2) {
-    return this.#client.registerTrigger(this.id, id, key, options);
+  async registerTrigger(
+    id: string,
+    key: string,
+    options: RegisterTriggerBodyV2,
+    idempotencyKey?: string
+  ) {
+    return this.#client.registerTrigger(this.id, id, key, options, idempotencyKey);
   }
 
   async getAuth(id: string) {
@@ -620,6 +744,10 @@ export class TriggerClient {
 
   async cancelEvent(eventId: string) {
     return this.#client.cancelEvent(eventId);
+  }
+
+  async cancelRunsForEvent(eventId: string) {
+    return this.#client.cancelRunsForEvent(eventId);
   }
 
   async updateStatus(runId: string, id: string, status: StatusUpdate) {
@@ -652,6 +780,10 @@ export class TriggerClient {
 
   async getRunStatuses(runId: string) {
     return this.#client.getRunStatuses(runId);
+  }
+
+  async invokeJob(jobId: string, payload: any, options?: InvokeOptions) {
+    return this.#client.invokeJob(jobId, payload, options);
   }
 
   authorized(
@@ -690,6 +822,7 @@ export class TriggerClient {
   async #executeJob(
     body: RunJobBody,
     job: Job<Trigger<any>, Record<string, TriggerIntegration>>,
+    timeOrigin: number,
     triggerVersion: string | null
   ): Promise<RunJobResponse> {
     this.#internalLogger.debug("executing job", {
@@ -716,6 +849,8 @@ export class TriggerClient {
         ? new Logger(job.id, job.logLevel ?? this.#options.logLevel ?? "info")
         : undefined,
       serverVersion: triggerVersion,
+      timeOrigin,
+      executionTimeout: body.runChunkExecutionLimit,
     });
 
     const resolvedConnections = await this.#resolveConnections(
@@ -738,12 +873,20 @@ export class TriggerClient {
     );
 
     try {
+      const parsedPayload = job.trigger.event.parsePayload(body.event.payload ?? {});
+
+      if (!context.run.isTest) {
+        const verified = await job.trigger.verifyPayload(parsedPayload);
+        if (!verified.success) {
+          return {
+            status: "ERROR",
+            error: { message: `Payload verification failed. ${verified.reason}` },
+          };
+        }
+      }
+
       const output = await runLocalStorage.runWith({ io, ctx: context }, () => {
-        return job.options.run(
-          job.trigger.event.parsePayload(body.event.payload ?? {}),
-          ioWithConnections,
-          context
-        );
+        return job.options.run(parsedPayload, ioWithConnections, context);
       });
 
       if (this.#options.verbose) {
@@ -756,67 +899,124 @@ export class TriggerClient {
         this.#logIOStats(io.stats);
       }
 
-      if (error instanceof YieldExecutionError) {
-        return { status: "YIELD_EXECUTION", key: error.key };
-      }
-
-      if (error instanceof ParsedPayloadSchemaError) {
-        return { status: "INVALID_PAYLOAD", errors: error.schemaErrors };
-      }
-
-      if (error instanceof ResumeWithTaskError) {
-        return { status: "RESUME_WITH_TASK", task: error.task };
-      }
-
-      if (error instanceof RetryWithTaskError) {
+      if (error instanceof ResumeWithParallelTaskError) {
         return {
-          status: "RETRY_WITH_TASK",
+          status: "RESUME_WITH_PARALLEL_TASK",
           task: error.task,
-          error: error.cause,
-          retryAt: error.retryAt,
+          childErrors: error.childErrors.map((childError) => {
+            return this.#convertErrorToExecutionResponse(childError, body);
+          }),
         };
       }
 
-      if (error instanceof CanceledWithTaskError) {
-        return {
-          status: "CANCELED",
-          task: error.task,
-        };
-      }
+      return this.#convertErrorToExecutionResponse(error, body);
+    }
+  }
 
-      if (error instanceof RetryWithTaskError) {
-        const errorWithStack = ErrorWithStackSchema.safeParse(error.cause);
+  #convertErrorToExecutionResponse(error: any, body: RunJobBody): RunJobErrorResponse {
+    if (error instanceof AutoYieldExecutionError) {
+      return {
+        status: "AUTO_YIELD_EXECUTION",
+        location: error.location,
+        timeRemaining: error.timeRemaining,
+        timeElapsed: error.timeElapsed,
+        limit: body.runChunkExecutionLimit,
+      };
+    }
 
-        if (errorWithStack.success) {
-          return {
-            status: "ERROR",
-            error: errorWithStack.data,
-            task: error.task,
-          };
-        }
+    if (error instanceof AutoYieldWithCompletedTaskExecutionError) {
+      return {
+        status: "AUTO_YIELD_EXECUTION_WITH_COMPLETED_TASK",
+        id: error.id,
+        properties: error.properties,
+        output: error.output,
+        data: {
+          ...error.data,
+          limit: body.runChunkExecutionLimit,
+        },
+      };
+    }
 
-        return {
-          status: "ERROR",
-          error: { message: "Unknown error" },
-          task: error.task,
-        };
-      }
+    if (error instanceof YieldExecutionError) {
+      return { status: "YIELD_EXECUTION", key: error.key };
+    }
 
-      const errorWithStack = ErrorWithStackSchema.safeParse(error);
+    if (error instanceof ParsedPayloadSchemaError) {
+      return { status: "INVALID_PAYLOAD", errors: error.schemaErrors };
+    }
+
+    if (error instanceof ResumeWithTaskError) {
+      return { status: "RESUME_WITH_TASK", task: error.task };
+    }
+
+    if (error instanceof RetryWithTaskError) {
+      return {
+        status: "RETRY_WITH_TASK",
+        task: error.task,
+        error: error.cause,
+        retryAt: error.retryAt,
+      };
+    }
+
+    if (error instanceof CanceledWithTaskError) {
+      return {
+        status: "CANCELED",
+        task: error.task,
+      };
+    }
+
+    if (error instanceof ErrorWithTask) {
+      const errorWithStack = ErrorWithStackSchema.safeParse(error.cause.output);
 
       if (errorWithStack.success) {
-        return { status: "ERROR", error: errorWithStack.data };
+        return {
+          status: "ERROR",
+          error: errorWithStack.data,
+          task: error.cause,
+        };
+      }
+
+      return {
+        status: "ERROR",
+        error: { message: JSON.stringify(error.cause.output) },
+        task: error.cause,
+      };
+    }
+
+    if (error instanceof RetryWithTaskError) {
+      const errorWithStack = ErrorWithStackSchema.safeParse(error.cause);
+
+      if (errorWithStack.success) {
+        return {
+          status: "ERROR",
+          error: errorWithStack.data,
+          task: error.task,
+        };
       }
 
       return {
         status: "ERROR",
         error: { message: "Unknown error" },
+        task: error.task,
       };
     }
+
+    const errorWithStack = ErrorWithStackSchema.safeParse(error);
+
+    if (errorWithStack.success) {
+      return { status: "ERROR", error: errorWithStack.data };
+    }
+
+    const message = typeof error === "string" ? error : JSON.stringify(error);
+
+    return {
+      status: "ERROR",
+      error: { name: "Unknown error", message },
+    };
   }
 
   #createRunContext(execution: RunJobBody): TriggerContext {
-    const { event, organization, environment, job, run, source } = execution;
+    const { event, organization, project, environment, job, run, source } = execution;
 
     return {
       event: {
@@ -826,6 +1026,7 @@ export class TriggerClient {
         timestamp: event.timestamp,
       },
       organization,
+      project: project ?? { id: "unknown", name: "unknown", slug: "unknown" }, // backwards compat with old servers
       environment,
       job,
       run,
@@ -962,6 +1163,79 @@ export class TriggerClient {
         },
       },
       metadata: results.metadata,
+    };
+  }
+
+  async #handleHttpEndpointRequestForResponse(
+    data: {
+      key: string;
+    },
+    sourceRequest: Request
+  ): Promise<{
+    response: NormalizedResponse;
+  }> {
+    this.#internalLogger.debug("Handling HTTP Endpoint request for response", {
+      data,
+    });
+
+    const httpEndpoint = this.#registeredHttpEndpoints[data.key];
+    if (!httpEndpoint) {
+      this.#internalLogger.debug("No handler registered for HTTP Endpoint", {
+        data,
+      });
+
+      return {
+        response: {
+          status: 200,
+          body: {
+            ok: true,
+          },
+        },
+      };
+    }
+
+    const handledResponse = await httpEndpoint.handleRequest(sourceRequest);
+
+    if (!handledResponse) {
+      this.#internalLogger.debug("There's no HTTP Endpoint respondWith.handler()", {
+        data,
+      });
+      return {
+        response: {
+          status: 200,
+          body: {
+            ok: true,
+          },
+        },
+      };
+    }
+
+    let body: string | undefined;
+    try {
+      body = await handledResponse.text();
+    } catch (error) {
+      this.#internalLogger.error(
+        `Error reading httpEndpoint ${httpEndpoint.id} respondWith.handler Response`,
+        {
+          error,
+        }
+      );
+    }
+
+    const response = {
+      status: handledResponse.status,
+      headers: handledResponse.headers
+        ? Object.fromEntries(handledResponse.headers.entries())
+        : undefined,
+      body,
+    };
+
+    this.#internalLogger.info(`httpEndpoint ${httpEndpoint.id} respondWith.handler response`, {
+      response,
+    });
+
+    return {
+      response,
     };
   }
 
@@ -1158,9 +1432,11 @@ export class TriggerClient {
     });
   }
 
-  get #standardResponseHeaders() {
+  #standardResponseHeaders(start: number) {
     return {
       "Trigger-Version": API_VERSIONS.LAZY_LOADED_CACHED_TASKS,
+      "Trigger-SDK-Version": packageJson.version,
+      "X-Trigger-Request-Timing": `dur=${performance.now() - start / 1000.0}`,
     };
   }
 }

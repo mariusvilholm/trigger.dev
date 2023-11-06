@@ -3,13 +3,13 @@ import { parse } from "@conform-to/zod";
 import { ClipboardIcon } from "@heroicons/react/20/solid";
 import { ClockIcon, CodeBracketIcon } from "@heroicons/react/24/outline";
 import { Form, useActionData, useSubmit } from "@remix-run/react";
-import { ActionFunction, LoaderArgs, json } from "@remix-run/server-runtime";
+import { ActionFunction, LoaderFunctionArgs, json } from "@remix-run/server-runtime";
 import { useCallback, useRef, useState } from "react";
 import { typedjson, useTypedLoaderData } from "remix-typedjson";
 import { z } from "zod";
 import { JSONEditor } from "~/components/code/JSONEditor";
 import { EnvironmentLabel } from "~/components/environments/EnvironmentLabel";
-import { BreadcrumbLink } from "~/components/navigation/NavBar";
+import { BreadcrumbLink } from "~/components/navigation/Breadcrumb";
 import { Button, LinkButton } from "~/components/primitives/Buttons";
 import { Callout } from "~/components/primitives/Callout";
 import { DateTime } from "~/components/primitives/DateTime";
@@ -38,7 +38,7 @@ import { Handle } from "~/utils/handle";
 import { isValidIcon } from "~/utils/icon";
 import { JobParamsSchema, jobRunDashboardPath, trimTrailingSlash } from "~/utils/pathBuilder";
 
-export const loader = async ({ request, params }: LoaderArgs) => {
+export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const userId = await requireUserId(request);
   const { organizationSlug, projectParam, jobParam } = JobParamsSchema.parse(params);
 
@@ -166,7 +166,8 @@ export default function Page() {
 
   const [form, { environmentId, payload, accountId }] = useForm({
     id: "test-job",
-    lastSubmission,
+    // TODO: type this
+    lastSubmission: lastSubmission as any,
     onValidate({ formData }) {
       return parse(formData, { schema });
     },

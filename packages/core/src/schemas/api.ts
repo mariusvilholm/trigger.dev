@@ -17,6 +17,7 @@ import { CachedTaskSchema, ServerTaskSchema, TaskSchema } from "./tasks";
 import { EventSpecificationSchema, TriggerMetadataSchema } from "./triggers";
 import { RunStatusSchema } from "./runs";
 import { JobRunStatusRecordSchema } from "./statuses";
+import { RequestFilterSchema } from "./requestFilter";
 
 export const UpdateTriggerSourceBodyV1Schema = z.object({
   registeredEvents: z.array(z.string()),
@@ -174,15 +175,24 @@ export const HttpSourceRequestHeadersSchema = z.object({
 
 export type HttpSourceRequestHeaders = z.output<typeof HttpSourceRequestHeadersSchema>;
 
+export const HttpEndpointRequestHeadersSchema = z.object({
+  "x-ts-key": z.string(),
+  "x-ts-http-url": z.string(),
+  "x-ts-http-method": z.string(),
+  "x-ts-http-headers": z.string().transform((s) => z.record(z.string()).parse(JSON.parse(s))),
+});
+
 export const PongSuccessResponseSchema = z.object({
   ok: z.literal(true),
   triggerVersion: z.string().optional(),
+  triggerSdkVersion: z.string().optional(),
 });
 
 export const PongErrorResponseSchema = z.object({
   ok: z.literal(false),
   error: z.string(),
   triggerVersion: z.string().optional(),
+  triggerSdkVersion: z.string().optional(),
 });
 
 export const PongResponseSchema = z.discriminatedUnion("ok", [
@@ -287,11 +297,27 @@ export const DynamicTriggerEndpointMetadataSchema = z.object({
 
 export type DynamicTriggerEndpointMetadata = z.infer<typeof DynamicTriggerEndpointMetadataSchema>;
 
+const HttpEndpointMetadataSchema = z.object({
+  id: z.string(),
+  version: z.string(),
+  enabled: z.boolean(),
+  title: z.string().optional(),
+  icon: z.string().optional(),
+  properties: z.array(DisplayPropertySchema).optional(),
+  event: EventSpecificationSchema,
+  immediateResponseFilter: RequestFilterSchema.optional(),
+  skipTriggeringRuns: z.boolean().optional(),
+  source: z.string(),
+});
+
+export type HttpEndpointMetadata = z.infer<typeof HttpEndpointMetadataSchema>;
+
 export const IndexEndpointResponseSchema = z.object({
   jobs: z.array(JobMetadataSchema),
   sources: z.array(SourceMetadataSchema),
   dynamicTriggers: z.array(DynamicTriggerEndpointMetadataSchema),
   dynamicSchedules: z.array(RegisterDynamicSchedulePayloadSchema),
+  httpEndpoints: z.array(HttpEndpointMetadataSchema).optional(),
 });
 
 export type IndexEndpointResponse = z.infer<typeof IndexEndpointResponseSchema>;
@@ -309,6 +335,7 @@ const IndexEndpointStatsSchema = z.object({
   dynamicTriggers: z.number(),
   dynamicSchedules: z.number(),
   disabledJobs: z.number().default(0),
+  httpEndpoints: z.number().default(0),
 });
 
 export type IndexEndpointStats = z.infer<typeof IndexEndpointStatsSchema>;
@@ -345,6 +372,7 @@ export type GetEndpointIndexResponse = z.infer<typeof GetEndpointIndexResponseSc
 
 export const EndpointHeadersSchema = z.object({
   "trigger-version": z.string().optional(),
+  "trigger-sdk-version": z.string().optional(),
 });
 
 export const RawEventSchema = z.object({
@@ -371,6 +399,9 @@ export const RawEventSchema = z.object({
   /** This is optional, it defaults to "trigger.dev". It can be useful to set
       this as you can filter events using this in the `eventTrigger()`. */
   source: z.string().optional(),
+  /** This is optional, it defaults to "JSON". If your event is actually a request,
+      with a url, headers, method and rawBody you can use "REQUEST" */
+  payloadType: z.union([z.literal("JSON"), z.literal("REQUEST")]).optional(),
 });
 
 export type RawEvent = z.infer<typeof RawEventSchema>;
@@ -451,6 +482,15 @@ export const RunSourceContextSchema = z.object({
 
 export type RunSourceContext = z.infer<typeof RunSourceContextSchema>;
 
+export const AutoYieldConfigSchema = z.object({
+  startTaskThreshold: z.number(),
+  beforeExecuteTaskThreshold: z.number(),
+  beforeCompleteTaskThreshold: z.number(),
+  afterCompleteTaskThreshold: z.number(),
+});
+
+export type AutoYieldConfig = z.infer<typeof AutoYieldConfigSchema>;
+
 export const RunJobBodySchema = z.object({
   event: ApiEventLogSchema,
   job: z.object({
@@ -473,6 +513,13 @@ export const RunJobBodySchema = z.object({
     title: z.string(),
     slug: z.string(),
   }),
+  project: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      slug: z.string(),
+    })
+    .optional(),
   account: z
     .object({
       id: z.string(),
@@ -485,6 +532,8 @@ export const RunJobBodySchema = z.object({
   noopTasksSet: z.string().optional(),
   connections: z.record(ConnectionAuthSchema).optional(),
   yieldedExecutions: z.string().array().optional(),
+  runChunkExecutionLimit: z.number().optional(),
+  autoYieldConfig: AutoYieldConfigSchema.optional(),
 });
 
 export type RunJobBody = z.infer<typeof RunJobBodySchema>;
@@ -503,6 +552,35 @@ export const RunJobYieldExecutionErrorSchema = z.object({
 });
 
 export type RunJobYieldExecutionError = z.infer<typeof RunJobYieldExecutionErrorSchema>;
+
+export const AutoYieldMetadataSchema = z.object({
+  location: z.string(),
+  timeRemaining: z.number(),
+  timeElapsed: z.number(),
+  limit: z.number().optional(),
+});
+
+export type AutoYieldMetadata = z.infer<typeof AutoYieldMetadataSchema>;
+
+export const RunJobAutoYieldExecutionErrorSchema = AutoYieldMetadataSchema.extend({
+  status: z.literal("AUTO_YIELD_EXECUTION"),
+});
+
+export type RunJobAutoYieldExecutionError = Prettify<
+  z.infer<typeof RunJobAutoYieldExecutionErrorSchema>
+>;
+
+export const RunJobAutoYieldWithCompletedTaskExecutionErrorSchema = z.object({
+  status: z.literal("AUTO_YIELD_EXECUTION_WITH_COMPLETED_TASK"),
+  id: z.string(),
+  properties: z.array(DisplayPropertySchema).optional(),
+  output: z.string().optional(),
+  data: AutoYieldMetadataSchema,
+});
+
+export type RunJobAutoYieldWithCompletedTaskExecutionError = z.infer<
+  typeof RunJobAutoYieldWithCompletedTaskExecutionErrorSchema
+>;
 
 export const RunJobInvalidPayloadErrorSchema = z.object({
   status: z.literal("INVALID_PAYLOAD"),
@@ -548,12 +626,37 @@ export const RunJobSuccessSchema = z.object({
 
 export type RunJobSuccess = z.infer<typeof RunJobSuccessSchema>;
 
-export const RunJobResponseSchema = z.discriminatedUnion("status", [
+export const RunJobErrorResponseSchema = z.union([
+  RunJobAutoYieldExecutionErrorSchema,
+  RunJobAutoYieldWithCompletedTaskExecutionErrorSchema,
   RunJobYieldExecutionErrorSchema,
   RunJobErrorSchema,
   RunJobUnresolvedAuthErrorSchema,
   RunJobInvalidPayloadErrorSchema,
   RunJobResumeWithTaskSchema,
+  RunJobRetryWithTaskSchema,
+  RunJobCanceledWithTaskSchema,
+]);
+
+export type RunJobErrorResponse = z.infer<typeof RunJobErrorResponseSchema>;
+
+export const RunJobResumeWithParallelTaskSchema = z.object({
+  status: z.literal("RESUME_WITH_PARALLEL_TASK"),
+  task: TaskSchema,
+  childErrors: z.array(RunJobErrorResponseSchema),
+});
+
+export type RunJobResumeWithParallelTask = z.infer<typeof RunJobResumeWithParallelTaskSchema>;
+
+export const RunJobResponseSchema = z.discriminatedUnion("status", [
+  RunJobAutoYieldExecutionErrorSchema,
+  RunJobAutoYieldWithCompletedTaskExecutionErrorSchema,
+  RunJobYieldExecutionErrorSchema,
+  RunJobErrorSchema,
+  RunJobUnresolvedAuthErrorSchema,
+  RunJobInvalidPayloadErrorSchema,
+  RunJobResumeWithTaskSchema,
+  RunJobResumeWithParallelTaskSchema,
   RunJobRetryWithTaskSchema,
   RunJobCanceledWithTaskSchema,
   RunJobSuccessSchema,
@@ -664,7 +767,7 @@ export const RunTaskOptionsSchema = z.object({
   retry: RetryOptionsSchema.optional(),
   /** The icon for the Task, it will appear in the logs.
    *  You can use the name of a company in lowercase, e.g. "github".
-   *  Or any icon name that [Font Awesome](https://fontawesome.com/icons) supports. */
+   *  Or any icon name that [Tabler Icons](https://tabler-icons.io/) supports. */
   icon: z.string().optional(),
   /** The key for the Task that you want to appear in the logs */
   displayKey: z.string().optional(),
@@ -694,6 +797,7 @@ export const RunTaskOptionsSchema = z.object({
   noop: z.boolean().default(false),
   redact: RedactSchema.optional(),
   trigger: TriggerMetadataSchema.optional(),
+  parallel: z.boolean().optional(),
 });
 
 export type RunTaskOptions = z.input<typeof RunTaskOptionsSchema>;
@@ -749,6 +853,16 @@ export const CompleteTaskBodyInputSchema = RunTaskBodyInputSchema.pick({
 
 export type CompleteTaskBodyInput = Prettify<z.input<typeof CompleteTaskBodyInputSchema>>;
 export type CompleteTaskBodyOutput = z.infer<typeof CompleteTaskBodyInputSchema>;
+
+export const CompleteTaskBodyV2InputSchema = RunTaskBodyInputSchema.pick({
+  properties: true,
+  description: true,
+  params: true,
+}).extend({
+  output: z.string().optional(),
+});
+
+export type CompleteTaskBodyV2Input = Prettify<z.input<typeof CompleteTaskBodyV2InputSchema>>;
 
 export const FailTaskBodyInputSchema = z.object({
   error: ErrorWithStackSchema,
@@ -853,3 +967,29 @@ export const GetRunStatusesSchema = z.object({
   statuses: z.array(JobRunStatusRecordSchema),
 });
 export type GetRunStatuses = z.infer<typeof GetRunStatusesSchema>;
+
+export const InvokeJobResponseSchema = z.object({
+  id: z.string(),
+});
+
+export const InvokeJobRequestBodySchema = z.object({
+  payload: z.any(),
+  context: z.any().optional(),
+  options: z
+    .object({
+      accountId: z.string().optional(),
+      callbackUrl: z.string().optional(),
+    })
+    .optional(),
+});
+
+export type InvokeJobRequestBody = z.infer<typeof InvokeJobRequestBodySchema>;
+
+export const InvokeOptionsSchema = z.object({
+  accountId: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+  context: z.any().optional(),
+  callbackUrl: z.string().optional(),
+});
+
+export type InvokeOptions = z.infer<typeof InvokeOptionsSchema>;

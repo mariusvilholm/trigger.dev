@@ -1,10 +1,11 @@
-import type { ActionArgs } from "@remix-run/server-runtime";
+import type { ActionFunctionArgs } from "@remix-run/server-runtime";
 import { json } from "@remix-run/server-runtime";
 import { RuntimeEnvironmentType } from "@trigger.dev/database";
 import { z } from "zod";
 import { $transaction, PrismaClient, PrismaClientOrTransaction, prisma } from "~/db.server";
-import { enqueueRunExecutionV2 } from "~/models/jobRunExecution.server";
 import { logger } from "~/services/logger.server";
+import { ResumeTaskService } from "~/services/tasks/resumeTask.server";
+import { workerQueue } from "~/services/worker.server";
 
 const ParamsSchema = z.object({
   runId: z.string(),
@@ -12,7 +13,7 @@ const ParamsSchema = z.object({
   secret: z.string(),
 });
 
-export async function action({ request, params }: ActionArgs) {
+export async function action({ request, params }: ActionFunctionArgs) {
   // Ensure this is a POST request
   if (request.method.toUpperCase() !== "POST") {
     return { status: 405, body: "Method Not Allowed" };
@@ -96,14 +97,14 @@ export class CallbackRunTaskService {
         },
       });
 
+      await workerQueue.dequeue(`process-callback:${task.id}`, { tx });
+
       await this.#resumeRunExecution(task, tx);
     });
   }
 
   async #resumeRunExecution(task: NonNullable<FoundTask>, prisma: PrismaClientOrTransaction) {
-    await enqueueRunExecutionV2(task.run, prisma, {
-      skipRetrying: task.run.environment.type === RuntimeEnvironmentType.DEVELOPMENT,
-    });
+    await ResumeTaskService.enqueue(task.id, undefined, prisma);
   }
 }
 

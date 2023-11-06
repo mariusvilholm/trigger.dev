@@ -1,5 +1,35 @@
 # @trigger.dev/express
 
+## 2.2.4
+
+### Patch Changes
+
+- Updated dependencies [c1710ae7]
+- Updated dependencies [9c4be40a]
+  - @trigger.dev/sdk@2.2.4
+
+## 2.2.3
+
+### Patch Changes
+
+- e80aa282: Remove web-fetch dependency and use native node Request/Response
+- Updated dependencies [6e1b8a11]
+- Updated dependencies [c4533c36]
+  - @trigger.dev/sdk@2.2.3
+
+## 2.2.2
+
+### Patch Changes
+
+- @trigger.dev/sdk@2.2.2
+
+## 2.2.1
+
+### Patch Changes
+
+- Updated dependencies [044d38e3]
+  - @trigger.dev/sdk@2.2.1
+
 ## 2.2.0
 
 ### Minor Changes

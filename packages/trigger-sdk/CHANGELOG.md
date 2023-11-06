@@ -1,5 +1,39 @@
 # @trigger.dev/sdk
 
+## 2.2.4
+
+### Patch Changes
+
+- c1710ae7: Creates a new package @trigger.dev/core-backend that includes code shared between @trigger.dev/sdk and the Trigger.dev server
+- 9c4be40a: use idempotency-key as event-id for dynamic-trigger registrations
+- Updated dependencies [c1710ae7]
+  - @trigger.dev/core-backend@2.2.4
+  - @trigger.dev/core@2.2.4
+
+## 2.2.3
+
+### Patch Changes
+
+- 6e1b8a11: implement functionality to cancel job runs triggered by a given eventId.
+- c4533c36: set error messages in runTask and executeJob
+- Updated dependencies [6e1b8a11]
+  - @trigger.dev/core@2.2.3
+
+## 2.2.2
+
+### Patch Changes
+
+- @trigger.dev/core@2.2.2
+
+## 2.2.1
+
+### Patch Changes
+
+- 044d38e3: Auto-yield run execution to help prevent duplicate task executions
+- Updated dependencies [044d38e3]
+- Updated dependencies [abc9737a]
+  - @trigger.dev/core@2.2.1
+
 ## 2.2.0
 
 ### Minor Changes

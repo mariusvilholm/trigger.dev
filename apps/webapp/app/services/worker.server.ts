@@ -12,16 +12,18 @@ import { DeliverEventService } from "./events/deliverEvent.server";
 import { InvokeDispatcherService } from "./events/invokeDispatcher.server";
 import { integrationAuthRepository } from "./externalApis/integrationAuthRepository.server";
 import { IntegrationConnectionCreatedService } from "./externalApis/integrationConnectionCreated.server";
-import { logger } from "./logger.server";
 import { MissingConnectionCreatedService } from "./runs/missingConnectionCreated.server";
-import { PerformRunExecutionV1Service } from "./runs/performRunExecutionV1.server";
-import { PerformRunExecutionV2Service } from "./runs/performRunExecutionV2.server";
+import { PerformRunExecutionV3Service } from "./runs/performRunExecutionV3.server";
 import { StartRunService } from "./runs/startRun.server";
 import { DeliverScheduledEventService } from "./schedules/deliverScheduledEvent.server";
 import { ActivateSourceService } from "./sources/activateSource.server";
 import { DeliverHttpSourceRequestService } from "./sources/deliverHttpSourceRequest.server";
 import { PerformTaskOperationService } from "./tasks/performTaskOperation.server";
-import { ProcessCallbackTimeoutService } from "./tasks/processCallbackTimeout";
+import { ProcessCallbackTimeoutService } from "./tasks/processCallbackTimeout.server";
+import { ProbeEndpointService } from "./endpoints/probeEndpoint.server";
+import { DeliverRunSubscriptionService } from "./runs/deliverRunSubscription.server";
+import { DeliverRunSubscriptionsService } from "./runs/deliverRunSubscriptions.server";
+import { ResumeTaskService } from "./tasks/resumeTask.server";
 
 const workerCatalog = {
   indexEndpoint: z.object({
@@ -76,17 +78,33 @@ const workerCatalog = {
   connectionCreated: z.object({
     id: z.string(),
   }),
+  probeEndpoint: z.object({
+    id: z.string(),
+  }),
+  simulate: z.object({
+    seconds: z.number(),
+  }),
+  deliverRunSubscriptions: z.object({
+    id: z.string(),
+  }),
+  deliverRunSubscription: z.object({
+    id: z.string(),
+  }),
+  resumeTask: z.object({
+    id: z.string(),
+  }),
 };
 
 const executionWorkerCatalog = {
-  performRunExecution: z.object({
-    id: z.string(),
-  }),
   performRunExecutionV2: z.object({
     id: z.string(),
     reason: z.enum(["EXECUTE_JOB", "PREPROCESS"]),
     resumeTaskId: z.string().optional(),
     isRetry: z.boolean(),
+  }),
+  performRunExecutionV3: z.object({
+    id: z.string(),
+    reason: z.enum(["EXECUTE_JOB", "PREPROCESS"]),
   }),
 };
 
@@ -119,6 +137,10 @@ if (env.NODE_ENV === "production") {
 }
 
 export async function init() {
+  // const pgNotify = new PgNotifyService();
+  // await pgNotify.call("trigger:graphile:migrate", { latestMigration: 10 });
+  // await new Promise((resolve) => setTimeout(resolve, 10000))
+
   if (env.WORKER_ENABLED === "true") {
     await workerQueue.initialize();
   }
@@ -145,6 +167,7 @@ function getWorkerQueue() {
       schema: env.WORKER_SCHEMA,
       maxPoolSize: env.WORKER_CONCURRENCY,
     },
+    shutdownTimeoutInMs: env.GRACEFUL_SHUTDOWN_TIMEOUT,
     schema: workerCatalog,
     recurringTasks: {
       // Run this every 5 minutes
@@ -313,6 +336,48 @@ function getWorkerQueue() {
           });
         },
       },
+      probeEndpoint: {
+        priority: 10,
+        maxAttempts: 1,
+        handler: async (payload, job) => {
+          const service = new ProbeEndpointService();
+
+          await service.call(payload.id);
+        },
+      },
+      simulate: {
+        maxAttempts: 5,
+        handler: async (payload, job) => {
+          await new Promise((resolve) => setTimeout(resolve, payload.seconds * 1000));
+        },
+      },
+      deliverRunSubscriptions: {
+        priority: 1, // smaller number = higher priority
+        maxAttempts: 5,
+        handler: async (payload, job) => {
+          const service = new DeliverRunSubscriptionsService();
+
+          await service.call(payload.id);
+        },
+      },
+      deliverRunSubscription: {
+        priority: 1, // smaller number = higher priority
+        maxAttempts: 13,
+        handler: async (payload, job) => {
+          const service = new DeliverRunSubscriptionService();
+
+          await service.call(payload.id);
+        },
+      },
+      resumeTask: {
+        priority: 0,
+        maxAttempts: 3,
+        handler: async (payload, job) => {
+          const service = new ResumeTaskService();
+
+          return await service.call(payload.id);
+        },
+      },
     },
   });
 }
@@ -329,30 +394,33 @@ function getExecutionWorkerQueue() {
       schema: env.WORKER_SCHEMA,
       maxPoolSize: env.EXECUTION_WORKER_CONCURRENCY,
     },
+    shutdownTimeoutInMs: env.GRACEFUL_SHUTDOWN_TIMEOUT,
     schema: executionWorkerCatalog,
     tasks: {
-      performRunExecution: {
-        priority: 0, // smaller number = higher priority
-        maxAttempts: 1,
-        handler: async (payload, job) => {
-          // This is a legacy task that we don't use anymore, but needs to be here for backwards compatibility
-          // TODO: remove this once all performRunExecution tasks have been processed
-          const service = new PerformRunExecutionV1Service();
-
-          await service.call(payload.id);
-        },
-      },
       performRunExecutionV2: {
         priority: 0, // smaller number = higher priority
         maxAttempts: 12,
         handler: async (payload, job) => {
-          const service = new PerformRunExecutionV2Service();
+          const service = new PerformRunExecutionV3Service();
 
           await service.call({
             id: payload.id,
             reason: payload.reason,
             resumeTaskId: payload.resumeTaskId,
             isRetry: payload.isRetry,
+          });
+        },
+      },
+      performRunExecutionV3: {
+        priority: 0, // smaller number = higher priority
+        maxAttempts: 12,
+        handler: async (payload, job) => {
+          const service = new PerformRunExecutionV3Service();
+
+          await service.call({
+            id: payload.id,
+            reason: payload.reason,
+            isRetry: false,
           });
         },
       },

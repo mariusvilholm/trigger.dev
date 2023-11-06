@@ -13,6 +13,7 @@ import { EndpointIndexError } from "@trigger.dev/core";
 import { safeBodyFromResponse } from "~/utils/json";
 import { fromZodError } from "zod-validation-error";
 import { IndexEndpointStats } from "@trigger.dev/core";
+import { RegisterHttpEndpointService } from "../triggers/registerHttpEndpoint.server";
 
 export class PerformEndpointIndexService {
   #prismaClient: PrismaClient;
@@ -22,6 +23,7 @@ export class PerformEndpointIndexService {
   #registerSourceServiceV2 = new RegisterSourceServiceV2();
   #registerDynamicTriggerService = new RegisterDynamicTriggerService();
   #registerDynamicScheduleService = new RegisterDynamicScheduleService();
+  #registerHttpEndpointService = new RegisterHttpEndpointService();
 
   constructor(prismaClient: PrismaClient = prisma) {
     this.#prismaClient = prismaClient;
@@ -111,7 +113,7 @@ export class PerformEndpointIndexService {
 
       return updateEndpointIndexWithError(this.#prismaClient, id, {
         message: friendlyError,
-        raw: bodyResult.error.issues,
+        raw: fromZodError(bodyResult.error).message,
       });
     }
 
@@ -126,17 +128,22 @@ export class PerformEndpointIndexService {
       });
     }
 
-    const { jobs, sources, dynamicTriggers, dynamicSchedules } = bodyResult.data;
-    const { "trigger-version": triggerVersion } = headerResult.data;
+    const { jobs, sources, dynamicTriggers, dynamicSchedules, httpEndpoints } = bodyResult.data;
+    const { "trigger-version": triggerVersion, "trigger-sdk-version": triggerSdkVersion } =
+      headerResult.data;
     const { endpoint } = endpointIndex;
 
-    if (triggerVersion && triggerVersion !== endpoint.version) {
+    if (
+      (triggerVersion && triggerVersion !== endpoint.version) ||
+      (triggerSdkVersion && triggerSdkVersion !== endpoint.sdkVersion)
+    ) {
       await this.#prismaClient.endpoint.update({
         where: {
           id: endpoint.id,
         },
         data: {
           version: triggerVersion,
+          sdkVersion: triggerSdkVersion,
         },
       });
     }
@@ -147,6 +154,7 @@ export class PerformEndpointIndexService {
       dynamicTriggers: 0,
       dynamicSchedules: 0,
       disabledJobs: 0,
+      httpEndpoints: 0,
     };
 
     const existingJobs = await this.#prismaClient.job.findMany({
@@ -295,6 +303,21 @@ export class PerformEndpointIndexService {
       }
     }
 
+    if (httpEndpoints) {
+      for (const httpEndpoint of httpEndpoints) {
+        try {
+          await this.#registerHttpEndpointService.call(endpoint, httpEndpoint);
+          indexStats.httpEndpoints++;
+        } catch (error) {
+          logger.error("Failed to register http endpoint", {
+            endpointId: endpoint.id,
+            httpEndpoint,
+            error,
+          });
+        }
+      }
+    }
+
     logger.debug("Endpoint indexing complete", {
       endpointId: endpoint.id,
       indexStats,
@@ -315,6 +338,7 @@ export class PerformEndpointIndexService {
           sources,
           dynamicTriggers,
           dynamicSchedules,
+          httpEndpoints,
         },
       },
     });

@@ -1,6 +1,7 @@
 import {
   ApiEventLog,
   ApiEventLogSchema,
+  CancelRunsForEventSchema,
   CompleteTaskBodyInput,
   ConnectionAuthSchema,
   FailTaskBodyInput,
@@ -29,6 +30,10 @@ import {
   urlWithSearchParams,
   RunTaskResponseWithCachedTasksBodySchema,
   API_VERSIONS,
+  InvokeJobResponseSchema,
+  InvokeOptions,
+  InvokeJobRequestBody,
+  CompleteTaskBodyV2Input,
 } from "@trigger.dev/core";
 
 import { z } from "zod";
@@ -138,7 +143,7 @@ export class ApiClient {
     );
   }
 
-  async completeTask(runId: string, id: string, task: CompleteTaskBodyInput) {
+  async completeTask(runId: string, id: string, task: CompleteTaskBodyV2Input) {
     const apiKey = await this.#apiKey();
 
     this.#logger.debug("Complete Task", {
@@ -153,6 +158,7 @@ export class ApiClient {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
+          "Trigger-Version": API_VERSIONS.SERIALIZED_TASK_OUTPUT,
         },
         body: JSON.stringify(task),
       }
@@ -215,6 +221,26 @@ export class ApiClient {
     });
   }
 
+  async cancelRunsForEvent(eventId: string) {
+    const apiKey = await this.#apiKey();
+
+    this.#logger.debug("Cancelling runs for event", {
+      eventId,
+    });
+
+    return await zodfetch(
+      CancelRunsForEventSchema,
+      `${this.#apiUrl}/api/v1/events/${eventId}/cancel-runs`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+      }
+    );
+  }
+
   async updateStatus(runId: string, id: string, status: StatusUpdate) {
     const apiKey = await this.#apiKey();
 
@@ -268,7 +294,8 @@ export class ApiClient {
     client: string,
     id: string,
     key: string,
-    payload: RegisterTriggerBodyV2
+    payload: RegisterTriggerBodyV2,
+    idempotencyKey?: string
   ): Promise<RegisterSourceEventV2> {
     const apiKey = await this.#apiKey();
 
@@ -277,15 +304,21 @@ export class ApiClient {
       payload,
     });
 
+    const headers: HeadersInit = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    };
+
+    if (idempotencyKey) {
+      headers["Idempotency-Key"] = idempotencyKey;
+    }
+
     const response = await zodfetch(
       RegisterSourceEventSchemaV2,
       `${this.#apiUrl}/api/v2/${client}/triggers/${id}/registrations/${key}`,
       {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: headers,
         body: JSON.stringify(payload),
       }
     );
@@ -448,6 +481,33 @@ export class ApiClient {
     );
   }
 
+  async invokeJob(jobId: string, payload: any, options: InvokeOptions = {}) {
+    const apiKey = await this.#apiKey();
+
+    this.#logger.debug("Invoking Job", {
+      jobId,
+    });
+
+    const body: InvokeJobRequestBody = {
+      payload,
+      context: options.context ?? {},
+      options: {
+        accountId: options.accountId,
+        callbackUrl: options.callbackUrl,
+      },
+    };
+
+    return await zodfetch(InvokeJobResponseSchema, `${this.#apiUrl}/api/v1/jobs/${jobId}/invoke`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        ...(options.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
   async #apiKey() {
     const apiKey = getApiKey(this.#options.apiKey);
 
@@ -545,7 +605,8 @@ async function zodfetchWithVersions<
   options?: {
     errorMessage?: string;
     optional?: TOptional;
-  }
+  },
+  retryCount = 0
 ): Promise<
   TOptional extends true
     ? VersionedResponseBody<TVersionedResponseBodyMap, TUnversionedResponseBodySchema> | undefined
@@ -566,6 +627,22 @@ async function zodfetchWithVersions<
     const body = await response.json();
 
     throw new Error(body.error);
+  }
+
+  if (response.status >= 500 && retryCount < 6) {
+    // retry with exponential backoff and jitter
+    const delay = exponentialBackoff(retryCount + 1, 2, 50, 1150, 50);
+
+    await new Promise((resolve) => setTimeout(resolve, delay));
+
+    return zodfetchWithVersions(
+      versionedSchemaMap,
+      unversionedSchema,
+      url,
+      requestInit,
+      options,
+      retryCount + 1
+    );
   }
 
   if (response.status !== 200) {
@@ -604,7 +681,8 @@ async function zodfetch<TResponseSchema extends z.ZodTypeAny, TOptional extends 
   options?: {
     errorMessage?: string;
     optional?: TOptional;
-  }
+  },
+  retryCount = 0
 ): Promise<
   TOptional extends true ? z.infer<TResponseSchema> | undefined : z.infer<TResponseSchema>
 > {
@@ -625,6 +703,15 @@ async function zodfetch<TResponseSchema extends z.ZodTypeAny, TOptional extends 
     throw new Error(body.error);
   }
 
+  if (response.status >= 500 && retryCount < 6) {
+    // retry with exponential backoff and jitter
+    const delay = exponentialBackoff(retryCount + 1, 2, 50, 1150, 50);
+
+    await new Promise((resolve) => setTimeout(resolve, delay));
+
+    return zodfetch(schema, url, requestInit, options, retryCount + 1);
+  }
+
   if (response.status !== 200) {
     throw new Error(
       options?.errorMessage ?? `Failed to fetch ${url}, got status code ${response.status}`
@@ -634,4 +721,21 @@ async function zodfetch<TResponseSchema extends z.ZodTypeAny, TOptional extends 
   const jsonBody = await response.json();
 
   return schema.parse(jsonBody);
+}
+
+function exponentialBackoff(
+  retryCount: number,
+  exponential: number,
+  minDelay: number,
+  maxDelay: number,
+  jitter: number
+): number {
+  // Calculate the delay using the exponential backoff formula
+  const delay = Math.min(Math.pow(exponential, retryCount) * minDelay, maxDelay);
+
+  // Calculate the jitter
+  const jitterValue = Math.random() * jitter;
+
+  // Return the calculated delay with jitter
+  return delay + jitterValue;
 }

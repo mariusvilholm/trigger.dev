@@ -1,6 +1,13 @@
-import type { LoaderArgs } from "@remix-run/node";
+import type { LoaderFunctionArgs } from "@remix-run/node";
 import { Form } from "@remix-run/react";
-import { TypedMetaFunction, redirect, typedjson, useTypedLoaderData } from "remix-typedjson";
+import { getMatchesData, metaV1 } from "@remix-run/v1-meta";
+import {
+  TypedMetaFunction,
+  UseDataFunctionReturn,
+  redirect,
+  typedjson,
+  useTypedLoaderData,
+} from "remix-typedjson";
 import { LoginPageLayout } from "~/components/LoginPageLayout";
 import { Button, LinkButton } from "~/components/primitives/Buttons";
 import { Fieldset } from "~/components/primitives/Fieldset";
@@ -15,11 +22,15 @@ import { getUserId } from "~/services/session.server";
 import { appEnvTitleTag } from "~/utils";
 import { requestUrl } from "~/utils/requestUrl.server";
 
-export const meta: TypedMetaFunction<typeof loader, { root: RootLoader }> = ({ parentsData }) => ({
-  title: `Login to Trigger.dev${appEnvTitleTag(parentsData?.root.appEnv)}`,
-});
+export const meta: TypedMetaFunction<typeof loader> = (args) => {
+  const matchesData = getMatchesData(args) as { root: UseDataFunctionReturn<RootLoader> };
 
-export async function loader({ request }: LoaderArgs) {
+  return metaV1(args, {
+    title: `Login to Trigger.dev${appEnvTitleTag(matchesData.root.appEnv)}`,
+  });
+};
+
+export async function loader({ request }: LoaderFunctionArgs) {
   const userId = await getUserId(request);
   if (userId) return redirect("/");
 
