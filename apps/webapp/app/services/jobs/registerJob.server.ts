@@ -446,6 +446,7 @@ export class RegisterJobService {
             title: jobIntegration.metadata.name,
             authSource: "LOCAL",
             connectionType: "DEVELOPER",
+            setupStatus: "COMPLETE",
             definition: {
               connectOrCreate: {
                 where: {
@@ -524,6 +525,7 @@ export class RegisterJobService {
             title: jobIntegration.metadata.name,
             authSource: "RESOLVER",
             connectionType: "EXTERNAL",
+            setupStatus: "COMPLETE",
             definition: {
               connectOrCreate: {
                 where: {
